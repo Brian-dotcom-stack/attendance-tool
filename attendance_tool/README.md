@@ -1,4 +1,3 @@
-````md
 # Attendance Tracker Automation Tool
 
 Automates the process of updating an **Excel Attendance Master Tracker** by syncing leave/cancellation data from:
