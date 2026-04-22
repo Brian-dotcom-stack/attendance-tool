@@ -1,7 +1,3 @@
-Here’s a clean, GitHub-ready `README.md` for your project. I’ve structured it properly, fixed wording, and made it more professional and easier for others (or future you) to understand.
-
----
-
 ````md
 # Attendance Tracker Automation Tool
 
