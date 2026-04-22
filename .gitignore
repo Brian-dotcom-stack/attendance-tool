@@ -1,0 +1,17 @@
+venv/
+__pycache__/
+*.pyc
+
+# Excel / PDFs (sensitive data)
+*.xlsx
+*.xls
+*.csv
+*.pdf
+
+# IDE
+.vscode/
+.idea/
+
+# data files
+timeoff_reports/
+config.json
