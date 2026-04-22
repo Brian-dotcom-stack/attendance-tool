@@ -1,0 +1,11 @@
+{
+  "_comment": "Copy this file to config.json and fill in your details.",
+
+  "anthropic_api_key": "sk-ant-YOUR_KEY_HERE",
+
+  "sage_hr_api_key":   "b9774c6b4d9f8a73b4897fb20dea46bff836525b0230f9a82e429b2fd9af28ac6bb78a4c725b4f01",
+  "sage_hr_subdomain": "medicaresupportandhousingltd",
+
+  "fuzzy_match_threshold": 80,
+  "default_status_code":   "UA"
+}

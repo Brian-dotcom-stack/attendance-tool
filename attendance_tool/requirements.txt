@@ -1,0 +1,6 @@
+openpyxl>=3.1
+requests>=2.31
+anthropic>=0.25
+rapidfuzz>=3.6
+dateparser>=1.2
+python-dotenv>=1.0
