@@ -13,9 +13,10 @@ Usage:
 import argparse
 import sys
 import os
+sys.path.append(os.path.join(os.getcwd(), 'attendance_tool'))
 from datetime import date
 
-from config import load_config
+from attendance_tool.config import load_config
 from parsers.whatsapp_parser import parse_whatsapp_text
 from parsers.sage_hr import fetch_sage_hr_absences
 from excel_updater import update_excel

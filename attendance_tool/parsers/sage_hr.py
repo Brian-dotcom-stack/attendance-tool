@@ -15,7 +15,7 @@ To get your API key:
   Sage HR → Settings → Integrations → API → Enable API Access
 """
 
-from datetime import date, datetime
+import datetime
 from typing import List, Dict
 
 try:
@@ -82,8 +82,8 @@ class SageHRClient:
 
     def get_leave_requests(
         self,
-        start_date: date,
-        end_date: date,
+        start_date: str,
+        end_date: str,
         status: str = "approved"
     ) -> List[Dict]:
         """
@@ -91,90 +91,94 @@ class SageHRClient:
         status: "approved" | "pending" | "declined" | "all"
         """
         params = {
-            "date_from": start_date.isoformat(),
-            "date_to":   end_date.isoformat(),
+            "date_from": start_date,
+            "date_to":   end_date,
         }
         if status != "all":
             params["status"] = status
 
-        data = self._get("/api/leave-requests", params=params)
+        data = self._get("/api/leave-management/requests", params=params)
         leaves = data.get("data", data) if isinstance(data, dict) else data
         return leaves if isinstance(leaves, list) else []
 
 
 def fetch_sage_hr_absences(cfg: dict, month: int, year: int) -> List[Dict]:
     """
-    Fetch absences from Sage HR for the given month/year and return
-    them in the same format as the WhatsApp parser:
-      [{name, start_date, end_date, partial_week, note, excel_status}]
+    Fetch absences from Sage HR for the given month/year.
     """
     api_key   = cfg.get("sage_hr_api_key", "")
     subdomain = cfg.get("sage_hr_subdomain", "")
 
     if not api_key or not subdomain:
-        print(
-            "ERROR: Sage HR credentials missing.\n"
-            "  Set 'sage_hr_api_key' and 'sage_hr_subdomain' in config.json\n"
-            "  OR export SAGE_HR_API_KEY and SAGE_HR_SUBDOMAIN as environment variables."
-        )
+        print("ERROR: Sage HR credentials missing.")
         return []
 
     if not HAS_REQUESTS:
-        print("ERROR: 'requests' package not installed. Run: pip install requests")
+        print("ERROR: 'requests' package not installed.")
         return []
 
-    # Cover the whole month (± 1 day buffer to catch overlapping absences)
+    # --- FIXED SECTION ---
     from calendar import monthrange
-    _, last_day = monthrange(year, month)
-    range_start = date(year, month, 1)
-    range_end   = date(year, month, last_day)
+    from datetime import date as py_date  # Using an alias to avoid conflicts
+
+    # 1. Define the objects
+    start_obj = py_date(year, month, 1)
+    last_day_num = monthrange(year, month)[1]
+    end_obj = py_date(year, month, last_day_num)
+
+    # 2. Format them as strings for the API
+    range_start = start_obj.strftime('%Y-%m-%d')
+    range_end = end_obj.strftime('%Y-%m-%d')
+    # ----------------------
 
     client = SageHRClient(api_key, subdomain)
 
-    # Build id→name map
     print("   Fetching employee list…")
     employees = client.get_employees()
-    id_to_name = {emp["id"]: emp["name"] for emp in employees}
+    id_to_name = {str(emp["id"]): emp["name"] for emp in employees}
     print(f"   Found {len(employees)} employee(s).")
 
-    # Fetch leaves
     print("   Fetching leave records…")
+    # Use the string versions for the API call
     leaves = client.get_leave_requests(range_start, range_end, status="all")
     print(f"   Found {len(leaves)} leave record(s) in date range.")
 
     results = []
     for leave in leaves:
-        emp_id   = str(leave.get("employee_id", ""))
-        name     = id_to_name.get(emp_id) or leave.get("employee_name", emp_id)
+        emp_id    = str(leave.get("employee_id", ""))
+        name      = id_to_name.get(emp_id) or leave.get("employee_name", emp_id)
         start_str = leave.get("date_from") or leave.get("start_date") or ""
         end_str   = leave.get("date_to")   or leave.get("end_date")   or ""
-        leave_type = leave.get("leave_type_name") or leave.get("type", "")
-        status_val = leave.get("status", "")
-
+        
         if not start_str or not end_str:
             continue
 
+        # Convert leave strings back to date objects for comparison
+        from datetime import datetime
         try:
-            start = datetime.fromisoformat(start_str[:10]).date()
-            end   = datetime.fromisoformat(end_str[:10]).date()
+            leave_start = datetime.fromisoformat(start_str[:10]).date()
+            leave_end   = datetime.fromisoformat(end_str[:10]).date()
         except ValueError:
             continue
 
-        # Clip to the requested month
-        start = max(start, range_start)
-        end   = min(end, range_end)
-        if start > end:
+        # Clip to the requested month using the objects we made earlier
+        actual_start = max(leave_start, start_obj)
+        actual_end   = min(leave_end, end_obj)
+        
+        if actual_start > actual_end:
             continue
 
+        leave_type = leave.get("leave_type_name") or leave.get("type", "")
+        status_val = leave.get("status", "")
         excel_code = _map_leave_type(leave_type)
 
         results.append({
             "name":         name,
-            "start_date":   start.isoformat(),
-            "end_date":     end.isoformat(),
+            "start_date":   actual_start.isoformat(),
+            "end_date":     actual_end.isoformat(),
             "partial_week": False,
             "note":         f"{leave_type} [{status_val}]",
-            "excel_status": excel_code,     # overrides --status flag when present
+            "excel_status": excel_code,
         })
 
     return results

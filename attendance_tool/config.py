@@ -9,7 +9,8 @@ import os
 import json
 from pathlib import Path
 
-CONFIG_FILE = Path(__file__).parent / "config.json"
+BASE_DIR = Path(__file__).resolve().parent.parent
+CONFIG_FILE = BASE_DIR / "config.json"
 
 DEFAULTS = {
     "anthropic_api_key": "",
