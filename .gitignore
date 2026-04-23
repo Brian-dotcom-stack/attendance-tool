@@ -15,4 +15,4 @@ venv/
 # data files
 timeoff_reports/
 config.json
-cancellation.txt
+cancellations.txt
