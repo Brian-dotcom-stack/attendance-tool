@@ -1,20 +1,18 @@
 """
-parsers/whatsapp_parser.py
+whatsapp_parser.py
 
-Uses Claude (Anthropic API) to extract structured cancellation data
-from freeform WhatsApp messages, handling all the messy variations:
-  • "cancelled from X to Y"
-  • "cancelled from X to current"
-  • "working 2 days a week"
-  • "has not returned to work"
-  • multiple overlapping date ranges per person
-  • WhatsApp timestamps, phone numbers, etc.
+Parses WhatsApp shift cancellation messages.
+
+Handles:
+- Names on separate lines before their message
+- Informal cancellation language ("not be available", "can't make the shift", etc.)
+- Explicit dates (25/04) and relative dates (today, tomorrow, this week)
+- Falls back to Claude AI parser when an API key is configured
 """
 
-import json
 import re
-from datetime import date, datetime
-from typing import List, Dict
+from datetime import date, datetime, timedelta
+from typing import List, Dict, Tuple, Optional
 
 try:
     import anthropic
@@ -22,194 +20,203 @@ try:
 except ImportError:
     HAS_ANTHROPIC = False
 
-try:
-    import dateparser
-    HAS_DATEPARSER = True
-except ImportError:
-    HAS_DATEPARSER = False
 
+# ─────────────────────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────────────────────
 
-# ── System prompt for Claude ───────────────────────────────────────────────
-SYSTEM_PROMPT = """You are a data extraction assistant for a UK care staffing team.
-Extract shift cancellation records from the WhatsApp message text provided.
-Return ONLY a valid JSON array (no markdown, no explanation).
-
-Each element must have:
-  "name"         : string  — full name as written (e.g. "Winifred Nyingi")
-  "start_date"   : string  — ISO format YYYY-MM-DD
-  "end_date"     : string  — ISO format YYYY-MM-DD, or "current" if still ongoing
-  "partial_week" : boolean — true if "working 2 days a week" or similar
-  "note"         : string  — any extra context (e.g. "has not returned to work")
-
-Rules:
-- If a person has multiple date ranges, create one entry per range.
-- "current" or "to date" means today's date: {today}.
-- Ignore WhatsApp metadata lines ([time], phone numbers, "Messages and calls are end-to-end encrypted", etc).
-- Normalise all dates to the year {year} unless another year is clear.
-- "cancelled" = set absent for ALL days in range (end_date inclusive).
-- If "working 2 days a week" appears, set partial_week=true; still set the full range.
-- Return [] if no cancellations are found.
-"""
-
-# ── Fallback regex parser (used when no API key is configured) ─────────────
-MONTH_MAP = {
-    "january": 1, "jan": 1,
-    "february": 2, "feb": 2,
-    "march": 3, "mar": 3,
-    "april": 4, "apr": 4,
-    "may": 5,
-    "june": 6, "jun": 6,
-    "july": 7, "jul": 7,
-    "august": 8, "aug": 8,
-    "september": 9, "sep": 9, "sept": 9,
-    "october": 10, "oct": 10,
-    "november": 11, "nov": 11,
-    "december": 12, "dec": 12,
-}
-
-
-def _parse_date_str(s: str, default_year: int) -> date | None:
-    s = s.strip().lower()
-    if s in ("current", "date", "today", "now", "present"):
-        return date.today()
-
-    # Try dateparser first if available
-    if HAS_DATEPARSER:
-        parsed = dateparser.parse(
-            s,
-            settings={"PREFER_DAY_OF_MONTH": "first", "RETURN_AS_TIMEZONE_AWARE": False}
-        )
-        if parsed:
-            return parsed.date()
-
-    # Manual regex fallback: "24 march", "march 24", "24 march 2026"
-    pattern = re.compile(
-        r"(\d{1,2})\s+([a-z]+)(?:\s+(\d{4}))?|([a-z]+)\s+(\d{1,2})(?:\s+(\d{4}))?",
-        re.IGNORECASE
+def _is_name(line: str) -> bool:
+    """
+    Detect whether a line is likely a staff member's name.
+    Criteria: 1-3 words, title-cased, no digits.
+    """
+    line = line.strip()
+    return (
+        1 <= len(line.split()) <= 3
+        and line.istitle()
+        and not any(ch.isdigit() for ch in line)
     )
-    m = pattern.search(s)
-    if m:
-        if m.group(1):
-            day, month_str, year_str = m.group(1), m.group(2), m.group(3)
-        else:
-            month_str, day, year_str = m.group(4), m.group(5), m.group(6)
-        month = MONTH_MAP.get(month_str.lower())
-        if month:
-            year = int(year_str) if year_str else default_year
-            try:
-                return date(year, month, int(day))
-            except ValueError:
-                pass
-    return None
 
 
-def _regex_parse(text: str, default_year: int) -> List[Dict]:
-    """Simple regex fallback for when no API key is available."""
-    results = []
+# Cancellation phrases — order matters: more specific patterns first
+CANCELLATION_PATTERNS = [
+    r"not (?:be )?available",          # "not available" OR "not be available"
+    r"cancel(?:led|ling)?",            # cancelled, cancelling, cancel
+    r"can(?:not|'t) (?:make|work|do)", # can't make, can't work, cannot work
+    r"won't (?:be able|work|make)",    # won't be able, won't work, won't make
+    r"unable to (?:work|make|come)",   # unable to work/make/come
+    r"not working",
+    r"off sick",
+    r"calling in sick",
+    r"sick today",
+    r"won't come",
+    r"not (?:going to|gonna) (?:make|work|come)",
+]
+_CANCEL_RE = re.compile("|".join(CANCELLATION_PATTERNS), re.IGNORECASE)
 
-    # Strip WhatsApp metadata lines
-    lines = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
+
+def _is_cancellation(text: str) -> bool:
+    return bool(_CANCEL_RE.search(text))
+
+
+def _is_availability(text: str) -> bool:
+    """Detect availability messages (not cancellations)."""
+    text = text.lower()
+    return "available" in text and not re.search(r"not (?:be )?available", text, re.IGNORECASE)
+
+
+def _parse_date_range(text: str, default_year: int) -> Tuple[date, date]:
+    """
+    Extract a date range from free text.
+    Returns (start_date, end_date) — both the same for single-day events.
+    """
+    today = date.today()
+    text_lower = text.lower()
+
+    # "this week" → today through end of that week (Sunday)
+    if "this week" in text_lower or "rest of the week" in text_lower:
+        # Find the coming Sunday (weekday 6)
+        days_to_sunday = 6 - today.weekday()
+        end = today + timedelta(days=days_to_sunday)
+        return today, end
+
+    # "next week" → Monday to Sunday of next week
+    if "next week" in text_lower:
+        days_to_monday = (7 - today.weekday()) % 7 or 7
+        start = today + timedelta(days=days_to_monday)
+        end = start + timedelta(days=6)
+        return start, end
+
+    # "tomorrow"
+    if "tomorrow" in text_lower:
+        tomorrow = today + timedelta(days=1)
+        return tomorrow, tomorrow
+
+    # "today"
+    if "today" in text_lower:
+        return today, today
+
+    # Explicit dates like 25/04 or 5/4
+    date_matches = re.findall(r"\b(\d{1,2})/(\d{1,2})\b", text)
+    parsed_dates = []
+    for day_str, month_str in date_matches:
+        try:
+            parsed_dates.append(date(default_year, int(month_str), int(day_str)))
+        except ValueError:
             continue
-        # Skip WhatsApp system lines
+
+    if parsed_dates:
+        parsed_dates.sort()
+        return parsed_dates[0], parsed_dates[-1]
+
+    # No date found — fall back to today
+    return today, today
+
+
+# ─────────────────────────────────────────────────────────────
+# SMART REGEX PARSER
+# ─────────────────────────────────────────────────────────────
+
+def _smart_parse(text: str, default_year: int) -> List[Dict]:
+    """
+    Parse WhatsApp-style messages line by line.
+    Expects: name on its own line, then the message on the next line(s).
+    """
+    results = []
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    current_name: Optional[str] = None
+
+    for line in lines:
+        # Skip WhatsApp timestamp lines like "[12:30, 01/04/2026]"
         if re.match(r"^\[?\d{1,2}[:/]\d{2}", line):
             continue
-        if "end-to-end encrypted" in line.lower():
-            continue
-        lines.append(line)
 
-    clean = "\n".join(lines)
-
-    # Pattern: "Name cancelled from DATE to DATE"
-    cancellation_pattern = re.compile(
-        r"-?\s*([A-Z][a-zA-Z\s]+?)\s+cancelled?\s+from\s+"
-        r"(.+?)\s+to\s+(.+?)(?=\s*(?:,|and|\n|-|$))",
-        re.IGNORECASE
-    )
-
-    for m in cancellation_pattern.finditer(clean):
-        name = m.group(1).strip().rstrip(",")
-        start_str = m.group(2).strip()
-        end_str = m.group(3).strip()
-
-        start = _parse_date_str(start_str, default_year)
-        end = _parse_date_str(end_str, default_year)
-
-        if not start or not end:
+        if _is_name(line):
+            current_name = line
             continue
 
-        # Check for "2 days a week" nearby
-        context = clean[max(0, m.start() - 20): m.end() + 120]
-        partial = bool(re.search(r"2\s+days?\s+(a|per|every)\s+week", context, re.IGNORECASE))
+        if current_name is None:
+            continue
 
-        results.append({
-            "name": name,
-            "start_date": start.isoformat(),
-            "end_date": end.isoformat(),
-            "partial_week": partial,
-            "note": "working 2 days/week" if partial else ""
-        })
+        if _is_cancellation(line):
+            start, end = _parse_date_range(line, default_year)
+            results.append({
+                "name":       current_name,
+                "start_date": start.isoformat(),
+                "end_date":   end.isoformat(),
+                "type":       "cancelled",
+                "note":       line,
+            })
+            # Don't reset current_name — the same person may send another message
+
+        elif _is_availability(line):
+            # Positive availability — skip
+            pass
 
     return results
 
 
-# ── Main entry point ───────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# CLAUDE AI PARSER (optional)
+# ─────────────────────────────────────────────────────────────
 
-def parse_whatsapp_text(text: str, cfg: dict) -> List[Dict]:
-    """
-    Parse cancellation text and return a list of cancellation dicts.
-    Uses Claude API if an anthropic_api_key is configured, otherwise falls
-    back to regex parsing.
-    """
-    today = date.today()
-    year = today.year
+SYSTEM_PROMPT = """\
+You are a staff attendance assistant. Extract shift cancellations from WhatsApp messages.
 
-    api_key = cfg.get("anthropic_api_key", "")
+Return a JSON array ONLY — no preamble, no markdown fences, no extra text.
 
-    if api_key and HAS_ANTHROPIC:
-        return _claude_parse(text, api_key, today, year)
-    else:
-        if not api_key:
-            print("   ℹ️  No Anthropic API key — using regex parser (less accurate).")
-            print("      Add 'anthropic_api_key' to config.json for best results.")
-        elif not HAS_ANTHROPIC:
-            print("   ℹ️  anthropic package not installed — using regex parser.")
-            print("      Run: pip install anthropic")
-        return _regex_parse(text, year)
+Each object must have:
+  name        (string)  — the staff member's name
+  start_date  (string)  — YYYY-MM-DD
+  end_date    (string)  — YYYY-MM-DD
+  type        (string)  — always "cancelled"
+  note        (string)  — the original message text
+
+Rules:
+- Only include genuine cancellations or absences
+- Ignore availability notices ("I can work on…", "I'm available…")
+- Ignore complaints or rants that don't contain an actual cancellation
+- For "this week", use today through the coming Sunday
+- For "tomorrow", use tomorrow's date
+- If no date is given, use today's date
+- Do NOT invent dates
+"""
 
 
-def _claude_parse(text: str, api_key: str, today: date, year: int) -> List[Dict]:
+def _claude_parse(text: str, api_key: str) -> List[Dict]:
     client = anthropic.Anthropic(api_key=api_key)
-
-    system = SYSTEM_PROMPT.format(today=today.isoformat(), year=year)
-
     try:
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=2000,
-            system=system,
-            messages=[{"role": "user", "content": text}]
+            max_tokens=1500,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": text}],
         )
+        import json
         raw = response.content[0].text.strip()
-
         # Strip any accidental markdown fences
-        raw = re.sub(r"^```[a-z]*\n?", "", raw)
-        raw = re.sub(r"\n?```$", "", raw)
-
-        records = json.loads(raw)
-
-        # Normalise: convert "current" end dates to today
-        for r in records:
-            if r.get("end_date") == "current":
-                r["end_date"] = today.isoformat()
-
-        return records
-
-    except json.JSONDecodeError as e:
-        print(f"   ⚠️  Claude returned invalid JSON: {e}. Falling back to regex.")
-        return _regex_parse(text, year)
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        return json.loads(raw)
     except Exception as e:
-        print(f"   ⚠️  Claude API error: {e}. Falling back to regex.")
-        return _regex_parse(text, year)
+        print(f"   ⚠ Claude parser error: {e}")
+        return []
+
+
+# ─────────────────────────────────────────────────────────────
+# ENTRY POINT
+# ─────────────────────────────────────────────────────────────
+
+def parse_whatsapp_text(text: str, cfg: dict) -> List[Dict]:
+    year = date.today().year
+    api_key = cfg.get("anthropic_api_key", "")
+
+    if api_key and HAS_ANTHROPIC:
+        print("   Using Claude AI parser…")
+        results = _claude_parse(text, api_key)
+        if results:
+            return results
+        print("   Falling back to smart regex parser…")
+
+    print("   Using smart regex parser…")
+    return _smart_parse(text, year)

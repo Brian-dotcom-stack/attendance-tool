@@ -1,29 +1,30 @@
 # Attendance Tracker Automation Tool
 
-Automates the process of updating an **Excel Attendance Master Tracker** by syncing leave/cancellation data from:
+Automates the process of updating an **Excel Attendance Master Tracker** by syncing leave and cancellation data from:
 
 - WhatsApp messages or text files  
 - Sage HR API  
 
-It parses leave records, matches employees using fuzzy name matching, and updates the correct monthly sheet cells with proper absence codes.
+It parses leave records, matches employees using fuzzy name matching, and updates the correct monthly sheet cells with appropriate absence codes.
 
 ---
 
-## Features
+## 🚀 Features
 
-- 📄 Import leave data from WhatsApp text or Sage HR
-- 🤖 Optional AI-powered parsing (Claude API)
-- 🔍 Fuzzy name matching (handles nicknames and typos)
-- 📊 Updates Excel monthly sheets (Jan–Dec structure)
-- 🧠 Auto-detects leave types (Sick, Holiday, Emergency, etc.)
-- 📝 Adds remarks for special cases (e.g. part-time workers)
-- 🧪 Dry-run mode (preview without writing)
+- 📄 Import leave data from WhatsApp text or Sage HR  
+- 🤖 Optional AI-powered parsing (Claude API)  
+- 🔍 Fuzzy name matching (handles nicknames, partial names, typos)  
+- 📊 Updates Excel monthly sheets (Jan–Dec structure)  
+- 🧠 Auto-detects leave types (Sick, Holiday, Emergency, etc.)  
+- 📝 Adds remarks for special cases (e.g. part-time workers)  
+- 🧪 Dry-run mode (preview changes without writing to Excel)  
 
 ---
 
-## Quick Start
+## ⚡ Quick Start
 
 ### 1. Install dependencies
+
 ```bash
 pip install -r requirements.txt
 ````
@@ -32,11 +33,7 @@ pip install -r requirements.txt
 
 ### 2. Configure settings
 
-```bash
-cp config.json.example config.json
-```
-
-Then edit:
+Create a file called `config.json` in the root directory:
 
 ```json
 {
@@ -82,15 +79,59 @@ python main.py --source sageHR --excel tracker.xlsx --month 3 --year 2026
 python main.py --source whatsapp --input cancellations.txt --excel tracker.xlsx --dry-run
 ```
 
-#### Output to new file
+#### Output to a new file
 
 ```bash
-python main.py --source whatsapp --input cancellations.txt --excel tracker.xlsx --output tracker_updated.xlsx
+python main.py --source whatsapp --input cancellations.txt --excel tracker.xlsx --output tracker_output.xlsx
 ```
 
 ---
 
-## Excel Status Codes
+## 📊 Example Output
+
+```
+📲  Parsing WhatsApp cancellation messages…
+✅  Found 5 cancellation record(s):
+
+📝  Writing to Excel: tracker_output.xlsx
+
+✅  Done!
+   Cells updated  : 12
+   Unmatched names: 0
+```
+
+---
+
+## 📁 Project Structure
+
+```
+attendance-tool/
+│── main.py
+│── excel_updater.py
+│── attendance_tool/
+│   ├── parsers/
+│   │   ├── whatsapp_parser.py
+│   │   ├── sage_hr.py
+│   ├── config.py
+│── requirements.txt
+│── cancellations.txt (example)
+│── README.md
+```
+
+---
+
+## 📌 Excel Template Requirements
+
+This tool expects an Excel file with:
+
+* Monthly sheets named: **Jan → Dec**
+* Employee names in **Column B**
+* Day columns starting from **Column D**
+* A structured attendance format matching the template
+
+---
+
+## 🧾 Excel Status Codes
 
 | Code | Meaning                  |
 | ---- | ------------------------ |
@@ -105,52 +146,26 @@ python main.py --source whatsapp --input cancellations.txt --excel tracker.xlsx 
 
 ---
 
-## How it works
+## ⚙️ Configuration Options
 
-1. Parses cancellation/leave records
-2. Matches employee names using fuzzy matching
-3. Locates correct month sheet (Jan–Dec)
-4. Updates correct day columns in Excel
-5. Writes status codes (UA, AA, SA, etc.)
-6. Adds remarks for special cases (e.g. part-time staff)
-
----
-
-## Special Rules
-
-### Part-time (2 days/week)
-
-If detected:
-
-* Marks full leave range as `UA`
-* Adds remark:
-
-  ```
-  Working 2 days/week — update P days manually
-  ```
+| Key                   | Description                             |
+| --------------------- | --------------------------------------- |
+| anthropic_api_key     | Claude API key for advanced parsing     |
+| sage_hr_api_key       | Sage HR API access key                  |
+| sage_hr_subdomain     | Your Sage HR company subdomain          |
+| fuzzy_match_threshold | Name matching sensitivity (default: 80) |
+| default_status_code   | Default Excel status (usually UA)       |
 
 ---
 
-## Configuration Options
-
-| Key                     | Description                                 |
-| ----------------------- | ------------------------------------------- |
-| `anthropic_api_key`     | Claude API key for advanced message parsing |
-| `sage_hr_api_key`       | Sage HR API access key                      |
-| `sage_hr_subdomain`     | Your Sage HR company subdomain              |
-| `fuzzy_match_threshold` | Name matching sensitivity (default: 80)     |
-| `default_status_code`   | Default Excel status (usually UA)           |
-
----
-
-## Getting API Keys
+## 🔌 API Setup
 
 ### Claude (Anthropic)
 
 1. Visit [https://console.anthropic.com](https://console.anthropic.com)
 2. Create an account
-3. Generate API key
-4. Add to `config.json`
+3. Generate an API key
+4. Add it to `config.json`
 
 > Optional — tool works without it using regex parsing.
 
@@ -158,22 +173,32 @@ If detected:
 
 ### Sage HR API
 
-1. Login to Sage HR
+1. Log in to Sage HR
 2. Go to **Settings → Integrations → API**
 3. Enable API access
-4. Copy API key + subdomain
+4. Copy API key and subdomain
 
 ---
 
-## Troubleshooting
+## ⚠️ Limitations
+
+* Requires a predefined Excel template structure
+* Fuzzy matching may occasionally match similar names incorrectly
+* Does not currently detect duplicate or overlapping leave entries
+
+---
+
+## 🛠 Troubleshooting
 
 ### Unmatched employees
 
-Causes:
+Possible causes:
 
-* Nickname mismatch (e.g. "Favour" vs full name)
+* Nicknames vs full names
 * Spelling differences
-* Lower fuzzy threshold (`70–75` recommended)
+* Low fuzzy match threshold
+
+Try lowering threshold to **70–75**.
 
 ---
 
@@ -183,9 +208,9 @@ Check:
 
 * API key validity
 * Subdomain correctness
-* API permissions enabled
+* API permissions
 
-Test:
+Test with:
 
 ```bash
 curl -H "X-Auth-Token: YOUR_KEY" https://yourcompany.sage.hr/api/v1/employees
@@ -193,28 +218,22 @@ curl -H "X-Auth-Token: YOUR_KEY" https://yourcompany.sage.hr/api/v1/employees
 
 ---
 
-## Project Structure
+## 🧠 How It Works
 
-```
-attendance_tool/
-│── main.py
-│── excel_updater.py
-│── sage_hr.py
-│── whatsapp_parser.py
-│── config.json
-│── requirements.txt
-│── tracker.xlsx
-```
+1. Parses cancellation/leave records
+2. Matches employee names using fuzzy matching
+3. Locates correct month sheet (Jan–Dec)
+4. Updates correct day columns in Excel
+5. Writes absence codes (UA, AA, SA, etc.)
+6. Adds remarks for special cases
 
 ---
 
-## Notes
+## 📌 Notes
 
-* Designed for Excel attendance systems with monthly sheets
-* Uses fuzzy matching to reduce manual corrections
 * Built for HR/admin automation workflows
+* Reduces manual Excel updates significantly
+* Designed for real-world messy data (partial names, typos, etc.)
 
 ---
-
-
 

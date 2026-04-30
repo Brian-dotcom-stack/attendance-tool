@@ -13,12 +13,13 @@ Usage:
 import argparse
 import sys
 import os
-sys.path.append(os.path.join(os.getcwd(), 'attendance_tool'))
+import shutil
 from datetime import date
 
+# ── Flat imports (all files live in the same directory) ───────────────────────
 from attendance_tool.config import load_config
-from parsers.whatsapp_parser import parse_whatsapp_text
-from parsers.sage_hr import fetch_sage_hr_absences
+from attendance_tool.parsers.whatsapp_parser import parse_whatsapp_text
+from attendance_tool.parsers.sage_hr import fetch_sage_hr_absences
 from excel_updater import update_excel
 
 
@@ -29,16 +30,17 @@ def main():
     parser.add_argument(
         "--source",
         required=True,
-        help="Where to read cancellations from"
+        choices=["whatsapp", "sageHR", "sage_pdf"],
+        help="Where to read cancellations from: whatsapp | sageHR | sage_pdf"
     )
     parser.add_argument(
         "--excel",
         required=True,
-        help="Path to the attendance Excel file"
+        help="Path to the attendance Excel template file"
     )
     parser.add_argument(
         "--input",
-        help="[whatsapp] Path to a .txt file with WhatsApp messages"
+        help="[whatsapp / sage_pdf] Path to input file (.txt or folder of PDFs)"
     )
     parser.add_argument(
         "--text",
@@ -69,15 +71,15 @@ def main():
     )
     parser.add_argument(
         "--output",
-        help="Save updated Excel to a different file (default: overwrites --excel)"
+        help="Save updated Excel to a different file (default: tracker_output.xlsx)"
     )
 
     args = parser.parse_args()
 
-    # ── Load config (API keys, subdomain, etc.) ────────────────────────────
+    # ── Load config (API keys, subdomain, etc.) ────────────────────────────────
     cfg = load_config()
 
-    # ── Gather cancellations ───────────────────────────────────────────────
+    # ── Gather cancellations ───────────────────────────────────────────────────
     if args.source == "whatsapp":
         if args.input:
             with open(args.input, "r", encoding="utf-8") as f:
@@ -92,7 +94,11 @@ def main():
         cancellations = parse_whatsapp_text(raw_text, cfg)
 
     elif args.source == "sage_pdf":
-        from parsers.sage_pdf import parse_sage_pdf
+        if not args.input:
+            print("ERROR: --source sage_pdf requires --input <folder containing PDFs>")
+            sys.exit(1)
+        from sage_pdf import parse_sage_pdf
+        print("\n📄  Parsing Sage PDF reports…")
         cancellations = parse_sage_pdf(args.input)
 
     else:  # sageHR
@@ -110,27 +116,39 @@ def main():
     print(f"\n✅  Found {len(cancellations)} cancellation record(s):")
     for c in cancellations:
         flag = "  ⚠ 2 days/week — update P days manually" if c.get("partial_week") else ""
-        print(f"   • {c['name']:40s} {c['start_date']}  →  {c['end_date']}{flag}")
+        print(f"   • {c['name']:40s}  {c['start_date']}  →  {c['end_date']}{flag}")
 
-    # ── Write to Excel ─────────────────────────────────────────────────────
-    output_path = args.output or args.excel
-    if not os.path.exists(args.excel):
-        print(f"\nERROR: Excel file not found: {args.excel}")
+    # ── Validate Excel path ────────────────────────────────────────────────────
+    template_path = args.excel
+    if not os.path.exists(template_path):
+        print(f"\nERROR: Excel file not found: {template_path}")
         sys.exit(1)
 
+    output_path = args.output or "tracker_output.xlsx"
+
+    # Always copy template → output (never overwrite the template)
+    if template_path != output_path:
+        shutil.copy(template_path, output_path)
+        print(f"\n📄  Template copied → {output_path}")
+    else:
+        print("\n⚠️  Writing directly to the template file (use --output to avoid this)")
+
+    # ── Write to Excel ─────────────────────────────────────────────────────────
     if args.dry_run:
         print("\n🔎  Dry run — no changes written.")
     else:
         print(f"\n📝  Writing to Excel: {output_path}")
         stats = update_excel(
-            excel_path=args.excel,
+            excel_path=output_path,
             output_path=output_path,
             cancellations=cancellations,
             default_status=args.status
         )
-        print(f"✅  Done!  Cells updated: {stats['updated']}  |  Unmatched names: {stats['unmatched']}")
+        print(f"\n✅  Done!")
+        print(f"   Cells updated  : {stats['updated']}")
+        print(f"   Unmatched names: {stats['unmatched']}")
         if stats["unmatched_names"]:
-            print("   Unmatched names (check spelling):")
+            print("   ⚠ Names not found in Excel (check spelling):")
             for n in stats["unmatched_names"]:
                 print(f"     - {n}")
 
